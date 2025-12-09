@@ -1,0 +1,340 @@
+---
+title: "NYPD Shooting Incident Data Analysis"
+author: "A. Wodar"
+date: "2025-12-09"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+```{r load-libraries, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(scales)
+library(knitr)
+```
+
+```{r import-data, message=FALSE, warning=FALSE}
+# Importing NYPD Shooting Incident Data
+nypd_url <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+nypd_data <- read_csv(nypd_url)
+cat("NYPD Dataset Dimensions:", dim(nypd_data), "\n")
+cat("\nColumn Names:\n")
+print(names(nypd_data))
+```
+
+```{r explore-data}
+# Initial Data Exploration
+cat("First few rows of NYPD data:\n")
+head(nypd_data) %>%
+  kable()
+cat("\nStructure of NYPD data:\n")
+str(nypd_data)
+cat("\nSummary of NYPD data:\n")
+summary(nypd_data)
+```
+
+```{r clean-data}
+# Cleaning and Preparing the Data
+nypd_clean <- nypd_data %>%
+  mutate(
+    OCCUR_DATE = as.Date(OCCUR_DATE, format = "%m/%d/%Y"),
+    BORO = as.factor(BORO),
+    PERP_RACE = as.factor(PERP_RACE),
+    PERP_SEX = as.factor(PERP_SEX),
+    VIC_RACE = as.factor(VIC_RACE),
+    VIC_SEX = as.factor(VIC_SEX),
+    STATISTICAL_MURDER_FLAG = as.factor(STATISTICAL_MURDER_FLAG),
+    OCCUR_YEAR = year(OCCUR_DATE),
+    OCCUR_MONTH = month(OCCUR_DATE, label = TRUE),
+    OCCUR_WEEKDAY = wday(OCCUR_DATE, label = TRUE)
+  ) %>%
+  select(-PRECINCT, -JURISDICTION_CODE, -LOCATION_DESC, -X_COORD_CD, -Y_COORD_CD)
+
+cat("Missing values in each column:\n")
+colSums(is.na(nypd_clean)) %>%
+  as.data.frame() %>%
+  setNames("Missing_Count") %>%
+  filter(Missing_Count > 0) %>%
+  kable()
+```
+
+```{r finalize-data}
+nypd_final <- nypd_clean %>%
+  filter(!is.na(OCCUR_DATE) & !is.na(BORO)) %>%
+  mutate(
+    PERP_AGE_GROUP = ifelse(is.na(PERP_AGE_GROUP), "UNKNOWN", PERP_AGE_GROUP),
+    PERP_RACE = ifelse(is.na(PERP_RACE), "UNKNOWN", as.character(PERP_RACE)),
+    PERP_SEX = ifelse(is.na(PERP_SEX), "U", as.character(PERP_SEX)),
+    VIC_AGE_GROUP = ifelse(is.na(VIC_AGE_GROUP), "UNKNOWN", VIC_AGE_GROUP),
+    VIC_RACE = ifelse(is.na(VIC_RACE), "UNKNOWN", as.character(VIC_RACE)),
+    VIC_SEX = ifelse(is.na(VIC_SEX), "U", as.character(VIC_SEX))
+  ) %>%
+  mutate(
+    PERP_AGE_GROUP = as.factor(PERP_AGE_GROUP),
+    PERP_RACE = as.factor(PERP_RACE),
+    PERP_SEX = as.factor(PERP_SEX),
+    VIC_AGE_GROUP = as.factor(VIC_AGE_GROUP),
+    VIC_RACE = as.factor(VIC_RACE),
+    VIC_SEX = as.factor(VIC_SEX)
+  )
+
+cat("Final cleaned dataset dimensions:", dim(nypd_final), "\n")
+cat("\nSummary of cleaned data:\n")
+summary(nypd_final)
+```
+
+```{r covid-data, message=FALSE, warning=FALSE}
+# COVID Data
+covid_confirmed_us_url <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_US.csv"
+covid_deaths_us_url <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_US.csv"
+
+covid_confirmed <- read_csv(covid_confirmed_us_url)
+covid_deaths <- read_csv(covid_deaths_us_url)
+
+cat("COVID Confirmed Cases Dataset Dimensions:", dim(covid_confirmed), "\n")
+cat("COVID Deaths Dataset Dimensions:", dim(covid_deaths), "\n")
+```
+
+```{r viz1, fig.width=10, fig.height=6}
+## Visualization 1: Shooting Incidents by Borough Over Time
+shootings_by_month <- nypd_final %>%
+  mutate(OCCUR_MONTH_YEAR = floor_date(OCCUR_DATE, "month")) %>%
+  group_by(OCCUR_MONTH_YEAR, BORO) %>%
+  summarise(Shooting_Count = n(), .groups = "drop")
+
+ggplot(shootings_by_month, aes(x = OCCUR_MONTH_YEAR, y = Shooting_Count, color = BORO)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 0.5) +
+  labs(
+    title = "NYPD Shooting Incidents by Borough Over Time",
+    subtitle = "Monthly Trends in Shooting Incidents",
+    x = "Date",
+    y = "Number of Shooting Incidents",
+    color = "Borough"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5),
+    legend.position = "bottom"
+  ) +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
+  scale_y_continuous(labels = comma)
+```
+  
+```{r viz2, fig.width=10, fig.height=6}
+## Visualization 2: Victim and Perpetrator Age Group Analysis
+age_data <- nypd_final %>%
+  select(VIC_AGE_GROUP, PERP_AGE_GROUP) %>%
+  pivot_longer(cols = everything(), names_to = "Role", values_to = "Age_Group") %>%
+  mutate(Role = ifelse(Role == "VIC_AGE_GROUP", "Victim", "Perpetrator")) %>%
+  filter(!Age_Group %in% c("UNKNOWN", "")) %>%
+  group_by(Role, Age_Group) %>%
+  summarise(Count = n(), .groups = "drop") %>%
+  group_by(Role) %>%
+  mutate(Percentage = Count / sum(Count) * 100) %>%
+  ungroup()
+
+age_order <- c("<18", "18-24", "25-44", "45-64", "65+", "UNKNOWN")
+age_data$Age_Group <- factor(age_data$Age_Group, levels = age_order)
+
+ggplot(age_data, aes(x = Age_Group, y = Percentage, fill = Role)) +
+  geom_bar(stat = "identity", position = "dodge", alpha = 0.8) +
+  labs(
+    title = "Age Distribution of Shooting Incident Victims and Perpetrators",
+    subtitle = "Comparison of Age Groups Involved in Shooting Incidents",
+    x = "Age Group",
+    y = "Percentage (%)",
+    fill = "Role"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  ) +
+  scale_fill_brewer(palette = "Set1") +
+  scale_y_continuous(labels = function(x) paste0(x, "%"))
+```
+
+```{r viz3, fig.width=10, fig.height=6}
+## Visualization 3: Shooting Trends Pre- and Post-COVID
+covid_start <- as.Date("2020-03-01")
+
+nypd_final <- nypd_final %>%
+  mutate(COVID_PERIOD = ifelse(OCCUR_DATE < covid_start, "Pre-COVID", "Post-COVID"))
+
+covid_comparison <- nypd_final %>%
+  filter(OCCUR_DATE >= as.Date("2019-01-01") & OCCUR_DATE <= as.Date("2021-12-31")) %>%
+  mutate(Quarter = quarter(OCCUR_DATE, with_year = TRUE)) %>%
+  group_by(Quarter, COVID_PERIOD) %>%
+  summarise(Shooting_Count = n(), .groups = "drop")
+
+ggplot(covid_comparison, aes(x = Quarter, y = Shooting_Count, fill = COVID_PERIOD)) +
+  geom_col() +
+  labs(
+    title = "Shooting Incidents: Pre-COVID vs Post-COVID Periods",
+    subtitle = "Quarterly Comparison (2019-2021)",
+    x = "Quarter",
+    y = "Number of Shooting Incidents",
+    fill = "Period"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  ) +
+  scale_fill_manual(values = c("Pre-COVID" = "blue", "Post-COVID" = "red"))
+```
+  
+```{r viz4, fig.width=10, fig.height=6}
+## Additional Analysis for Time of Day
+nypd_final <- nypd_final %>%
+  mutate(
+    OCCUR_HOUR = as.numeric(substr(OCCUR_TIME, 1, 2)),
+    TIME_OF_DAY = case_when(
+      OCCUR_HOUR >= 5 & OCCUR_HOUR < 12 ~ "Morning (5-11)",
+      OCCUR_HOUR >= 12 & OCCUR_HOUR < 17 ~ "Afternoon (12-16)",
+      OCCUR_HOUR >= 17 & OCCUR_HOUR < 21 ~ "Evening (17-20)",
+      OCCUR_HOUR >= 21 | OCCUR_HOUR < 5 ~ "Night (21-4)",
+      TRUE ~ "Unknown"
+    )
+  )
+
+time_dist <- nypd_final %>%
+  filter(TIME_OF_DAY != "Unknown") %>%
+  count(TIME_OF_DAY) %>%
+  mutate(Percentage = n / sum(n) * 100)
+
+ggplot(time_dist, aes(x = reorder(TIME_OF_DAY, -Percentage), y = Percentage)) +
+  geom_col(fill = "steelblue", alpha = 0.8) +
+  geom_text(aes(label = paste0(round(Percentage, 1), "%")), 
+            vjust = -0.5, size = 3.5) +
+  labs(
+    title = "Distribution of Shooting Incidents by Time of Day",
+    x = "Time of Day",
+    y = "Percentage (%)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold")
+  )
+```
+  
+```{r summary-stats}
+## Statistical Summary
+cat("## Summary Statistics\n\n")
+
+cat("### Time Range of Data:\n")
+cat("Earliest Date:", as.character(min(nypd_final$OCCUR_DATE)), "\n")
+cat("Latest Date:", as.character(max(nypd_final$OCCUR_DATE)), "\n")
+
+cat("\n### Total Shooting Incidents:", nrow(nypd_final), "\n")
+
+cat("\n### Incidents by Borough:\n")
+nypd_final %>%
+  count(BORO) %>%
+  mutate(Percentage = n / sum(n) * 100) %>%
+  arrange(desc(n)) %>%
+  kable(digits = 2)
+
+cat("\n### Incidents Resulting in Death:\n")
+nypd_final %>%
+  count(STATISTICAL_MURDER_FLAG) %>%
+  mutate(Percentage = n / sum(n) * 100) %>%
+  kable(digits = 2)
+```
+  
+```{r conclusion, results='asis'}
+## Bias Discussion and Conclusion
+cat("# Conclusion
+
+## Key Findings
+
+1. **Temporal Trends**: When you look at the data, you can see fluctuations in shooting incidents over time. There are notable variations in the different boroughs of New York City.
+
+2. **Age Patterns**: The age patterns in the data show that both victims and perpetrators are predominantly in the 25-44 age range, and this is followed by the 18-24 age group.
+
+3. **Time Distribution**: The shooting incidents are not evenly distributed throughout the day. There are higher frequencies during evening and night hours.
+
+4. **COVID Impact**: The preliminary analysis suggests changes in the shooting incident patterns both before and after the COVID-19 pandemic declaration in March 2020.
+
+## Limitations and Potential Biases
+
+### Data Limitations:
+1. **Reporting Bias**: The data only includes incidents reported to and recorded by NYPD. Unreported incidents are not captured here.
+2. **Missing Data**: Some of the records have missing demographic information. These are marked as 'UNKNOWN' in the analysis.
+3. **Geographic Coverage**: The data is limited to New York City, so this may not reflect national trends.
+
+### Potential Sources of Bias:
+
+1. **Law Enforcement Bias**: The data collection may be influenced by the policing patterns and priorities in different neighborhoods.
+2. **Demographic Bias**: The race/ethnicity data may be subject to the officer's perception, rather than self-identification. More information would be helpful to understand how the data is collected.
+3. **Temporal Bias**: The reporting practices and definitions may have changed over the years covered by the dataset. It's important to know if there is consistency across the data reporting process.
+4. **Contextual Bias**: The data lacks contextual information about each incident. For example, it would be helpful to know the relationship between parties involved, the circumstances surrounding the incident, and more.
+
+### Personal Bias Mitigation:
+
+As an analyst, I acknowledge potential personal biases including:
+
+1. **Confirmation Bias**: To mitigate this, I focused on letting the data to guide the analysis, rather than seeking to confirm my own pre-existing hypotheses.
+2. **Selection Bias**: I used the entire available dataset rather than selecting specific subsets that might support a particular conclusion.
+3. **Interpretation Bias**: I made multiple visualizations in order to present different perspectives on the same data.
+4. **Contextual Awareness**: I explicitly noted the limitations of the data and avoided over-generalizing findings outside of NYC.
+
+## Recommendations for Further Research
+
+1. **Comparative Analysis**: Compare NYPD data with other cities' shooting incident data.
+2. **Socioeconomic Context**: Integrate neighborhood-level socioeconomic data to examine correlations.
+3. **Policy Impact Analysis**: Study the effects of specific policies or interventions on shooting trends.
+4. **Longitudinal Study**: Extend analysis to include more recent years and track long-term trends.
+
+## Ethical Considerations
+
+This analysis involves sensitive data about violent incidents. All of the findings should be interpreted with caution, and should not be used to stigmatize any demographic groups or neighborhoods. The data represents incidents, not individuals. It's important to consider these findings within broader social and economic contexts.
+")
+```
+
+```{r references}
+# References and Data Sources
+cat("# References
+
+## Data Sources:
+1. NYPD Shooting Incident Data (Historic) - NYC OpenData
+2. COVID-19 Data Repository by Johns Hopkins CSSE - GitHub
+
+## Tools Used:
+- R Statistical Software
+- tidyverse packages
+- ggplot2 for visualization
+
+## Analysis Date: ", format(Sys.Date(), "%B %d, %Y"), "\n\n")
+```
