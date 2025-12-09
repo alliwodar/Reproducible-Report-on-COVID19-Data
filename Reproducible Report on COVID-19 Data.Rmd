@@ -1,0 +1,538 @@
+---
+title: "COVID-19 Data Analysis"
+author: "A. Wodar"
+date: "2025-12-09"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(tidyverse)
+library(lubridate)
+library(reshape2)
+library(scales)
+library(kableExtra)
+library(plotly)
+library(zoo)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document.
+
+## Data Import
+
+```{r import_data}
+# Import the data
+base_url <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+
+file_names <- c("time_series_covid19_confirmed_global.csv",
+                "time_series_covid19_deaths_global.csv",
+                "time_series_covid19_confirmed_US.csv",
+                "time_series_covid19_deaths_US.csv")
+urls <- str_c(base_url, file_names)
+
+cat("Downloading COVID-19 data from Johns Hopkins GitHub...\n")
+
+tryCatch({
+  global_cases <- read_csv(urls[1], show_col_types = FALSE)
+  global_deaths <- read_csv(urls[2], show_col_types = FALSE)
+  US_cases <- read_csv(urls[3], show_col_types = FALSE)
+  US_deaths <- read_csv(urls[4], show_col_types = FALSE)
+  cat("Success - Data imported Successfully!\n")
+}, error = function(e) {
+  cat("Failed - Error importing data:", e$message, "\n")
+  cat("Trying alternative method...\n")
+  
+  global_cases <- read.csv(urls[1])
+  global_deaths <- read.csv(urls[2])
+  US_cases <- read.csv(urls[3])
+  US_deaths <- read.csv(urls[4])
+})
+```
+
+## Data Summary
+
+```{r data_summary}
+data_summary <- tibble(
+  Dataset = c("Global Cases", "Global Deaths", "US Cases", "US Deaths"),
+  Rows = c(nrow(global_cases), nrow(global_deaths), nrow(US_cases), nrow(US_deaths)),
+  Columns = c(ncol(global_cases), ncol(global_deaths), ncol(US_cases), ncol(US_deaths)),
+  Start_Date = c(
+    colnames(global_cases)[5],
+    colnames(global_deaths)[5],
+    colnames(US_cases)[12],
+    colnames(US_deaths)[13]
+  ),
+  End_Date = c(
+    colnames(global_cases)[ncol(global_cases)],
+    colnames(global_deaths)[ncol(global_deaths)],
+    colnames(US_cases)[ncol(US_cases)],
+    colnames(US_deaths)[ncol(US_deaths)]
+  )
+)
+
+kable(data_summary, caption = "Dataset Summary") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+## Data Processing
+
+```{r data_processing}
+# Function to pivot time series data to long format
+pivot_time_series <- function(df, value_name = "value") {
+  # For global data, first 4 columns are identifiers
+  # For US data, first 11-12 columns are identifiers
+  # We'll identify them by checking which columns are NOT dates
+  
+  # Find the first date column
+  first_date_col <- min(which(grepl("^[0-9]+/[0-9]+/[0-9]+$", colnames(df))))
+  
+  # ID columns are everything before the first date column
+  id_cols <- colnames(df)[1:(first_date_col - 1)]
+  
+  # Date columns are everything from first date column onward
+  date_cols <- colnames(df)[first_date_col:ncol(df)]
+  
+  df %>%
+    pivot_longer(
+      cols = all_of(date_cols),
+      names_to = "date",
+      values_to = value_name
+    ) %>%
+    mutate(date = mdy(date))
+}
+
+# Process global data
+global_cases_long <- global_cases %>%
+  pivot_time_series(value_name = "cases")
+
+global_deaths_long <- global_deaths %>%
+  pivot_time_series(value_name = "deaths")
+
+US_cases_long <- US_cases %>%
+  pivot_time_series(value_name = "cases")
+
+US_deaths_long <- US_deaths %>%
+  pivot_time_series(value_name = "deaths")
+
+# Calculate daily aggregates
+global_daily <- global_cases_long %>%
+  group_by(date) %>%
+  summarise(total_cases = sum(cases, na.rm = TRUE)) %>%
+  mutate(
+    new_cases = total_cases - lag(total_cases, default = first(total_cases)),
+    avg_new_cases_7day = rollmean(new_cases, 7, fill = NA, align = "right")
+  )
+
+global_deaths_daily <- global_deaths_long %>%
+  group_by(date) %>%
+  summarise(total_deaths = sum(deaths, na.rm = TRUE)) %>%
+  mutate(
+    new_deaths = total_deaths - lag(total_deaths, default = first(total_deaths)),
+    avg_new_deaths_7day = rollmean(new_deaths, 7, fill = NA, align = "right")
+  )
+
+US_daily <- US_cases_long %>%
+  group_by(date) %>%
+  summarise(total_cases = sum(cases, na.rm = TRUE)) %>%
+  mutate(
+    new_cases = total_cases - lag(total_cases, default = first(total_cases)),
+    avg_new_cases_7day = rollmean(new_cases, 7, fill = NA, align = "right")
+  )
+
+US_deaths_daily <- US_deaths_long %>%
+  group_by(date) %>%
+  summarise(total_deaths = sum(deaths, na.rm = TRUE)) %>%
+  mutate(
+    new_deaths = total_deaths - lag(total_deaths, default = first(total_deaths)),
+    avg_new_deaths_7day = rollmean(new_deaths, 7, fill = NA, align = "right")
+  )
+
+cat("Sample of Global Daily Data:\n")
+head(global_daily) %>% 
+  kable() %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+## Key Statistics
+
+```{r key_stats}
+latest_date <- max(global_daily$date)
+
+global_stats <- global_daily %>%
+  filter(date == latest_date) %>%
+  summarise(
+    Total_Cases = sum(total_cases),
+    Total_Deaths = sum(global_deaths_daily$total_deaths[global_deaths_daily$date == latest_date]),
+    Peak_Daily_Cases = max(global_daily$new_cases, na.rm = TRUE),
+    Peak_Daily_Deaths = max(global_deaths_daily$new_deaths, na.rm = TRUE),
+    Case_Fatality_Rate = (Total_Deaths / Total_Cases) * 100
+  )
+
+US_stats <- US_daily %>%
+  filter(date == latest_date) %>%
+  summarise(
+    Total_Cases = sum(total_cases),
+    Total_Deaths = sum(US_deaths_daily$total_deaths[US_deaths_daily$date == latest_date]),
+    Peak_Daily_Cases = max(US_daily$new_cases, na.rm = TRUE),
+    Peak_Daily_Deaths = max(US_deaths_daily$new_deaths, na.rm = TRUE),
+    Case_Fatality_Rate = (Total_Deaths / Total_Cases) * 100
+  )
+
+stats_table <- bind_rows(
+  global_stats %>% mutate(Region = "Global"),
+  US_stats %>% mutate(Region = "United States")
+) %>%
+  select(Region, everything())
+
+kable(stats_table, 
+      caption = "COVID-19 Key Statistics as of Latest Date",
+      digits = 2) %>%
+  kable_styling(bootstrap_options = c("striped", "hover")) %>%
+  column_spec(1, bold = TRUE)
+```
+
+## Visualization 1: Global Cases and Deaths
+
+```{r viz_global, fig.width=10, fig.height=6}
+global_combined <- global_daily %>%
+  left_join(global_deaths_daily %>% select(date, total_deaths), by = "date")
+
+ggplot(global_combined, aes(x = date)) +
+  geom_line(aes(y = total_cases, color = "Total Cases"), linewidth = 1) +
+  geom_line(aes(y = total_deaths * 100, color = "Total Deaths (scaled)"), linewidth = 1) +
+  scale_y_continuous(
+    name = "Total Confirmed Cases",
+    labels = label_comma(),
+    sec.axis = sec_axis(~./100, name = "Total Deaths", labels = label_comma())
+  ) +
+  scale_color_manual(
+    name = "",
+    values = c("Total Cases" = "steelblue", "Total Deaths (scaled)" = "darkred")
+  ) +
+  labs(
+    title = "Global COVID-19 Pandemic Progression",
+    subtitle = "Total Cases vs Total Deaths (Scaled for Comparison)",
+    x = "Date",
+    caption = "Data Source: Johns Hopkins University CSSE"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(size = 12, hjust = 0.5),
+    legend.position = "bottom",
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.minor = element_blank()
+  )
+```
+
+## Visualization 2: Top 10 Most Affected Countries
+
+```{r viz_countries, fig.width=10, fig.height=8}
+top_countries <- global_cases_long %>%
+  filter(date == latest_date) %>%
+  group_by(`Country/Region`) %>%
+  summarise(total_cases = sum(cases, na.rm = TRUE)) %>%
+  arrange(desc(total_cases)) %>%
+  head(10)
+
+top_countries_deaths <- global_deaths_long %>%
+  filter(date == latest_date & `Country/Region` %in% top_countries$`Country/Region`) %>%
+  group_by(`Country/Region`) %>%
+  summarise(total_deaths = sum(deaths, na.rm = TRUE))
+
+top_countries_data <- top_countries %>%
+  left_join(top_countries_deaths, by = "Country/Region") %>%
+  mutate(case_fatality_rate = (total_deaths / total_cases) * 100)
+
+ggplot(top_countries_data, 
+       aes(x = reorder(`Country/Region`, total_cases), 
+           y = total_cases, 
+           fill = case_fatality_rate)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = format(total_cases, big.mark = ",")), 
+            hjust = -0.1, size = 3.5) +
+  coord_flip() +
+  scale_fill_gradient(low = "lightblue", high = "darkblue", 
+                      name = "Case Fatality\nRate (%)") +
+  scale_y_continuous(
+    labels = label_comma(),
+    expand = expansion(mult = c(0, 0.1))
+  ) +
+  labs(
+    title = "Top 10 Countries by Total COVID-19 Cases",
+    subtitle = paste("As of", format(latest_date, "%B %d, %Y")),
+    x = "",
+    y = "Total Cases"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(size = 12, hjust = 0.5),
+    axis.text.y = element_text(size = 11),
+    legend.position = "right"
+  )
+```
+
+## Visualization 3: US State Comparison
+
+```{r viz_states, fig.width=10, fig.height=8}
+# Top 10 US states by total cases
+top_us_states <- US_cases_long %>%
+  filter(date == latest_date) %>%
+  group_by(`Province_State`) %>%
+  summarise(total_cases = sum(cases, na.rm = TRUE)) %>%
+  arrange(desc(total_cases)) %>%
+  head(10)
+
+# Population Data (from US_deaths dataset which contains Population column)
+top_states_data <- US_deaths %>%
+  select(`Province_State`, Population) %>%
+  distinct() %>%
+  right_join(top_us_states, by = "Province_State") %>%
+  mutate(
+    cases_per_100k = (total_cases / Population) * 100000
+  )
+
+ggplot(top_states_data, 
+       aes(x = reorder(`Province_State`, cases_per_100k), 
+           y = cases_per_100k,
+           fill = cases_per_100k)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = round(cases_per_100k, 0)), 
+            hjust = 1.2, size = 3.5, color = "white", fontface = "bold") +
+  coord_flip() +
+  scale_fill_gradient(low = "lightgreen", high = "darkgreen", 
+                      name = "Cases per 100k") +
+  labs(
+    title = "COVID-19 Case Rates in Top 10 US States",
+    subtitle = "Cases per 100,000 Population",
+    x = "",
+    y = "Cases per 100,000 Population"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(size = 12, hjust = 0.5),
+    axis.text.y = element_text(size = 11),
+    legend.position = "none"
+  )
+```
+
+## Statistical Modeling: Growth Rate Analysis
+
+```{r growth_analysis}
+# Identifying peaks
+find_peaks <- function(data, threshold = 10000) {
+  peaks <- c()
+  for (i in 2:(length(data)-1)) {
+    if (data[i] > data[i-1] && data[i] > data[i+1] && data[i] > threshold) {
+      peaks <- c(peaks, i)
+    }
+  }
+  return(peaks)
+}
+
+# Finding peaks in global data
+global_new_cases <- global_daily$new_cases
+global_peak_indices <- find_peaks(global_new_cases, threshold = 50000)
+global_peak_dates <- global_daily$date[global_peak_indices]
+
+# Only proceed if we have at least 3 peaks
+if (length(global_peak_dates) >= 3) {
+  # Wave periods
+  wave_periods <- list(
+    wave1 = list(start = min(global_daily$date), end = global_peak_dates[1]),
+    wave2 = list(start = global_peak_dates[1] + 1, end = global_peak_dates[2]),
+    wave3 = list(start = global_peak_dates[2] + 1, end = global_peak_dates[3]),
+    wave4 = list(start = global_peak_dates[3] + 1, end = max(global_daily$date))
+  )
+  
+  # Growth rates for each wave
+  calculate_growth_rate <- function(data, start_date, end_date) {
+    wave_data <- data %>%
+      filter(date >= start_date & date <= end_date) %>%
+      arrange(date)
+    
+    if (nrow(wave_data) < 2) return(NA)
+    
+    # Fit exponential model: log(cases) ~ date
+    model <- lm(log(total_cases + 1) ~ as.numeric(date), data = wave_data)
+    growth_rate <- coef(model)[2] * 100  # Convert to percentage
+    return(growth_rate)
+  }
+  
+  growth_rates <- sapply(wave_periods, function(wave) {
+    calculate_growth_rate(global_daily, wave$start, wave$end)
+  })
+  
+  growth_table <- tibble(
+    Wave = names(wave_periods),
+    Start_Date = sapply(wave_periods, function(x) as.character(x$start)),
+    End_Date = sapply(wave_periods, function(x) as.character(x$end)),
+    Daily_Growth_Rate = round(growth_rates, 4)
+  )
+  
+  kable(growth_table, 
+        caption = "Estimated Daily Growth Rates During Different Pandemic Waves",
+        col.names = c("Wave", "Start Date", "End Date", "Daily Growth Rate (%)")) %>%
+    kable_styling(bootstrap_options = c("striped", "hover"))
+}
+```
+
+## Visualization 4: Analyzing the Pandemic Waves
+
+```{r viz_waves, fig.width=10, fig.height=6}
+if (length(global_peak_dates) >= 3) {
+  ggplot(global_daily, aes(x = date, y = new_cases)) +
+    geom_line(color = "gray50", alpha = 0.7) +
+    geom_smooth(span = 0.1, color = "darkred", se = FALSE, linewidth = 1.2) +
+    geom_vline(xintercept = as.numeric(global_peak_dates[1:3]), 
+               linetype = "dashed", color = "blue", alpha = 0.5) +
+    annotate("text", 
+             x = global_peak_dates[1:3], 
+             y = max(global_daily$new_cases, na.rm = TRUE) * 0.9,
+             label = paste("Wave", 1:3), 
+             angle = 90, 
+             hjust = 1, 
+             vjust = -0.5,
+             color = "blue") +
+    scale_y_continuous(labels = label_comma()) +
+    labs(
+      title = "COVID-19 Pandemic Waves: Daily New Cases",
+      subtitle = "Global Trend with Major Wave Boundaries",
+      x = "Date",
+      y = "Daily New Cases",
+      caption = "Dashed lines indicate approximate wave peaks"
+    ) +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+      plot.subtitle = element_text(size = 12, hjust = 0.5),
+      panel.grid.minor = element_blank()
+    )
+}
+```
+
+## Analyzing US vs Global Trends
+
+```{r viz_comparison, fig.width=10, fig.height=6}
+comparison_data <- bind_rows(
+  global_daily %>% 
+    select(date, avg_new_cases_7day) %>%
+    mutate(region = "Global"),
+  US_daily %>% 
+    select(date, avg_new_cases_7day) %>%
+    mutate(region = "United States")
+) %>%
+  filter(date >= as.Date("2020-03-01"))
+
+ggplot(comparison_data, 
+       aes(x = date, y = avg_new_cases_7day, color = region, group = region)) +
+  geom_line(linewidth = 1.2) +
+  scale_color_manual(
+    values = c("Global" = "darkgreen", "United States" = "darkorange"),
+    name = "Region"
+  ) +
+  scale_y_continuous(
+    labels = label_comma(),
+    limits = c(0, NA)
+  ) +
+  labs(
+    title = "Comparison of COVID-19 Trends: US vs Global",
+    subtitle = "7-Day Moving Average of Daily New Cases",
+    x = "Date",
+    y = "7-Day Average of New Cases",
+    caption = "Note: US data represents approximately 15-25% of global cases during peak periods"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(size = 12, hjust = 0.5),
+    legend.position = "bottom",
+    panel.grid.minor = element_blank()
+  )
+```
+
+## Statistical Modeling (Part 2): Predictive Model for Early Pandemic
+
+```{r early_model, fig.width=10, fig.height=6}
+early_pandemic <- global_daily %>%
+  filter(date >= as.Date("2020-01-22") & date <= as.Date("2020-04-30")) %>%
+  mutate(
+    days_since_start = as.numeric(date - min(date)),
+    log_cases = log(total_cases + 1)
+  )
+
+exp_model <- lm(log_cases ~ days_since_start, data = early_pandemic)
+
+early_pandemic$predicted_log <- predict(exp_model)
+early_pandemic$predicted_cases <- exp(early_pandemic$predicted_log) - 1
+
+growth_rate <- coef(exp_model)[2]
+doubling_time <- log(2) / growth_rate
+
+ggplot(early_pandemic, aes(x = date)) +
+  geom_line(aes(y = total_cases, color = "Actual Cases"), linewidth = 1.2) +
+  geom_line(aes(y = predicted_cases, color = "Exponential Model"), 
+            linewidth = 1.2, linetype = "dashed") +
+  scale_color_manual(
+    values = c("Actual Cases" = "darkblue", "Exponential Model" = "red"),
+    name = ""
+  ) +
+  scale_y_log10(
+    labels = label_comma(),
+    breaks = trans_breaks("log10", function(x) 10^x),
+    limits = c(1, max(early_pandemic$total_cases) * 2)
+  ) +
+  annotation_logticks(sides = "l") +
+  labs(
+    title = "Exponential Growth Model of Early COVID-19 Pandemic",
+    subtitle = paste("First 100 Days | Estimated Doubling Time:", 
+                     round(doubling_time, 1), "days"),
+    x = "Date",
+    y = "Total Cases (Log Scale)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+    plot.subtitle = element_text(size = 12, hjust = 0.5),
+    legend.position = "bottom"
+  )
+
+model_summary <- summary(exp_model)
+cat("Model R-squared:", round(model_summary$r.squared, 4), "\n")
+cat("Daily Growth Rate:", round(growth_rate * 100, 4), "%\n")
+cat("Estimated Doubling Time:", round(doubling_time, 1), "days\n")
+```
+
+## Limitations and Biases
+
+### Potential Biases in the Data:
+- **Testing Bias**: Case counts heavily dependent on testing capacity and criteria
+- **Reporting Bias**: Variations in reporting standards across countries and over time
+- **Temporal Bias**: Reporting delays, especially for mortality data
+- **Geographic Bias**: Data quality varies by region and country development level
+- **Case Definition Changes**: Evolving diagnostic criteria throughout the pandemic
+
+### Limitations in This Analysis:
+- **Data Aggregation**: Country-level analysis masks subnational variations
+- **Model Simplification**: Exponential model only valid for early uncontrolled spread
+- **Missing Covariates**: Analysis doesn't account for interventions, variants, or vaccination
+- **Temporal Resolution**: Daily data may not capture real-time dynamics
+- **Population Heterogeneity**: No adjustment for demographic differences
+
+## Conclusion
+
+This analysis provides a comprehensive overview of the COVID-19 pandemic using the Johns Hopkins University dataset. Key findings include:
+
+- **Global Impact**: The pandemic affected every country, with clear waves of infection visible in the data
+- **Exponential Growth**: Early pandemic followed classic exponential growth with a doubling time of approximately `r round(doubling_time, 1)` days
+- **Geographic Variation**: Significant differences in case burden and fatality rates across countries and US states
+- **US Contribution**: The United States accounted for a substantial proportion of global cases
+- **Wave Patterns**: Clear identification of multiple pandemic waves with varying growth rates
